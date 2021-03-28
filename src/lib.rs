@@ -27,18 +27,18 @@ pub mod error;
 pub mod poly;
 pub mod serde_impl;
 
+use core::ops::{Add, AddAssign};
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::vec::Vec;
-use core::ops::{Add, AddAssign};
 
 use ff::Field;
 use group::{CurveAffine, CurveProjective, EncodedPoint};
 use hex_fmt::HexFmt;
 use log::debug;
-use pairing::Engine;
+use pairing::{Engine, PairingCurveAffine};
 use rand::distributions::{Distribution, Standard};
 use rand::{rngs::OsRng, Rng, RngCore, SeedableRng};
 use rand_chacha::ChaChaRng;
@@ -65,7 +65,7 @@ pub use crate::mock::{
 };
 
 #[cfg(not(feature = "use-insecure-test-only-mock-crypto"))]
-pub use pairing::bls12_381::{Bls12 as PEngine, Fr, FrRepr, G1Affine, G2Affine, G1, G2};
+pub use pairing::bls12_381::{Bls12 as PEngine, Fq12, Fr, FrRepr, G1Affine, G2Affine, G1, G2};
 
 /// The size of a key's representation in bytes.
 #[cfg(not(feature = "use-insecure-test-only-mock-crypto"))]
@@ -207,7 +207,6 @@ impl PublicKeyShare {
         commit.add_assign(&other.0.clone().0);
         PublicKeyShare(PublicKey(commit))
     }
-
 }
 
 /// A signature.
@@ -270,6 +269,46 @@ impl Signature {
         let mut bytes = [0u8; SIG_SIZE];
         bytes.copy_from_slice(self.0.into_affine().into_compressed().as_ref());
         bytes
+    }
+
+    /// Construct a new AggregateSignature from a slice of Signatures
+    pub fn aggregate_from_sigs(sigs: &[Signature]) -> Signature {
+        let mut aggregate = sigs[0].0;
+
+        for i in 1..sigs.len() {
+            let next = sigs[i].0;
+            aggregate.add_assign(&next)
+        }
+
+        Signature(aggregate)
+    }
+
+    /// Verify aggregate signature over corresponding pubkeys and msgs
+    pub fn core_aggregate_verify<M: AsRef<[u8]>>(&self, pubkeys: &[PublicKey], msgs: &[M]) -> bool {
+        assert_eq!(pubkeys.len(), msgs.len());
+        let hashes: Vec<G2> = msgs.iter().map(|msg| hash_g2(msg)).collect();
+
+        let p1: Fq12 = pubkeys
+            .iter()
+            .zip(hashes.iter())
+            .map(|(pk, h)| {
+                let g1_prep = pk.0.into_affine().prepare();
+                let g2_prep = h.into_affine().prepare();
+                (g1_prep, g2_prep)
+            })
+            .map(|(ref p, ref q)| PEngine::miller_loop(&[(p, q)]))
+            .fold(Fq12::one(), |mut acc, cur| {
+                acc.mul_assign(&cur);
+                acc
+            });
+
+        match PEngine::final_exponentiation(&p1) {
+            Some(c1) => {
+                let c2: Fq12 = PEngine::pairing(G1Affine::one(), G2Affine::from(self.0));
+                c1 == c2
+            }
+            _ => false,
+        }
     }
 }
 
@@ -655,9 +694,8 @@ impl PublicKeySet {
     pub fn combine(&self, other: PublicKeySet) -> PublicKeySet {
         let mut commit = self.commit.clone();
         commit.add_assign(&other.commit);
-        PublicKeySet{ commit }
+        PublicKeySet { commit }
     }
-
 }
 
 /// A secret key and an associated set of secret key shares.
@@ -821,6 +859,7 @@ mod tests {
     use super::*;
 
     use std::collections::BTreeMap;
+    use std::iter::repeat_with;
 
     use rand::{self, distributions::Standard, random, Rng};
 
@@ -1025,6 +1064,43 @@ mod tests {
         assert_eq!(pk, pk2);
         let sig2 = Signature::from_bytes(sig.to_bytes()).expect("invalid sig representation");
         assert_eq!(sig, sig2);
+    }
+
+    #[test]
+    fn test_same_msg_aggregate_sig() {
+        let total: usize = 10;
+
+        // Keeping separate to verify later
+        let secret_keys: Vec<SecretKey> =
+            (0..total).map(|_| SecretKey::random()).collect::<Vec<_>>();
+        let pubkeys: Vec<PublicKey> = secret_keys
+            .iter()
+            .map(|sk| sk.public_key())
+            .collect::<Vec<_>>();
+
+        // Everyone signs the same msg (not required though)
+        let msg = "sign me";
+        let msgs: Vec<&str> = repeat_with(|| msg.clone()).take(total as usize).collect();
+
+        let signatures: Vec<Signature> = secret_keys.iter().map(|sk| sk.sign(msg)).collect();
+        let sig = Signature::aggregate_from_sigs(&signatures);
+        assert!(sig.core_aggregate_verify(&pubkeys, &msgs))
+    }
+
+    #[test]
+    fn test_diff_msg_aggregate_sig() {
+        let sk1 = SecretKey::random();
+        let pk1 = sk1.public_key();
+        let sk2 = SecretKey::random();
+        let pk2 = sk2.public_key();
+        let msg1 = b"Rip and tear";
+        let msg2 = b"till is done";
+
+        let sig1 = sk1.sign(msg1);
+        let sig2 = sk2.sign(msg2);
+
+        let sig = Signature::aggregate_from_sigs(&[sig1, sig2]);
+        assert!(sig.core_aggregate_verify(&[pk1, pk2], &[msg1, msg2]))
     }
 
     #[test]
