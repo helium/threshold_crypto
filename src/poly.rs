@@ -35,6 +35,7 @@ use crate::into_fr::IntoFr;
 use crate::secret::clear_fr;
 use crate::PublicKey;
 use crate::{Fr, G1Affine, G1};
+use std::time::{Duration, Instant};
 
 /// A univariate polynomial in the prime field.
 #[derive(Serialize, Deserialize, PartialEq, Eq, Clone)]
@@ -352,11 +353,9 @@ impl Poly {
 
     /// Returns the unique polynomial `f` of degree `samples.len() - 1` with the given values
     /// `(x, f(x))`. Expects samples to be a vector of two tuple Field representation elements.
-    pub fn interpolate_from_fr(samples: Vec<(Fr, Fr)>) -> Self
-    {
+    pub fn interpolate_from_fr(samples: Vec<(Fr, Fr)>) -> Self {
         Poly::compute_interpolation(&samples)
     }
-
 
     /// Returns the degree.
     pub fn degree(&self) -> usize {
@@ -725,6 +724,7 @@ impl BivarCommitment {
 
     /// Returns the commitment's value at the point `(x, y)`.
     pub fn evaluate<T: IntoFr>(&self, x: T, y: T) -> G1 {
+        let start = Instant::now();
         let x_pow = self.powers(x);
         let y_pow = self.powers(y);
         // TODO: Can we save a few multiplication steps here due to the symmetry?
@@ -738,6 +738,8 @@ impl BivarCommitment {
                 result.add_assign(&summand);
             }
         }
+        let duration = start.elapsed();
+        println!("bicommitment calc final: {:?}", duration);
         result
     }
 
@@ -869,7 +871,7 @@ mod tests {
     }
 
     #[test]
-    fn distributed_key_generation() {
+    fn dist_key_generation() {
         let mut rng = rand::thread_rng();
         let dealer_num = 3;
         let node_num = 5;
