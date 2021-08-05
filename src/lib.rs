@@ -294,9 +294,8 @@ impl Signature {
             .map(|(pk, h)| {
                 let g1_prep = pk.0.into_affine().prepare();
                 let g2_prep = h.into_affine().prepare();
-                (g1_prep, g2_prep)
+                PEngine::miller_loop(&[(&g1_prep, &g2_prep)])
             })
-            .map(|(ref p, ref q)| PEngine::miller_loop(&[(p, q)]))
             .fold(Fq12::one(), |mut acc, cur| {
                 acc.mul_assign(&cur);
                 acc
