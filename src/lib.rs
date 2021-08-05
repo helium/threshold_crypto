@@ -285,7 +285,14 @@ impl Signature {
 
     /// Verify aggregate signature over corresponding pubkeys and msgs
     pub fn core_aggregate_verify<M: AsRef<[u8]>>(&self, pubkeys: &[PublicKey], msgs: &[M]) -> bool {
-        assert_eq!(pubkeys.len(), msgs.len());
+        if pubkeys.is_empty() || msgs.is_empty() {
+            return false;
+        }
+
+        if pubkeys.len() != msgs.len() {
+            return false;
+        }
+
         let hashes: Vec<G2> = msgs.iter().map(|msg| hash_g2(msg)).collect();
 
         let p1: Fq12 = pubkeys
